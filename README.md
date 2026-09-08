@@ -27,6 +27,20 @@ uninstall-app /path/to/App.app   # or pass a direct path
 uninstall-app --test             # run the built-in self-check
 ```
 
+## Language
+
+Output is in English or Vietnamese, picked in this order:
+
+1. `UNINSTALL_APP_LANG=en|vi` environment variable
+2. `--lang en|vi` flag
+3. macOS UI language (`defaults read -g AppleLocale`)
+4. English, as a fallback
+
+```bash
+uninstall-app --lang vi Figma
+UNINSTALL_APP_LANG=vi uninstall-app Figma
+```
+
 The script prints the resolved app path, bundle ID, and every leftover file
 it found, then asks `y/N` before touching anything. Deletion goes through
 Finder (`osascript`), so removing a system-owned app (root-owned, under

@@ -2,7 +2,7 @@
 # uninstall-app: find a macOS app + its leftover files (Application Support,
 # Caches, Preferences, Containers, Saved State, Logs...) and move them all
 # to the Trash in one go.
-# Usage: uninstall-app <AppName|path-to.app>
+# Usage: uninstall-app [--lang en|vi] <AppName|path-to.app>
 #        uninstall-app --test   (self-check, no real deletion)
 set -euo pipefail
 
@@ -22,6 +22,47 @@ SEARCH_DIRS=(
   "/Library/LaunchAgents"
   "/Library/LaunchDaemons"
 )
+
+# Language: UNINSTALL_APP_LANG env var > --lang flag > macOS locale > en.
+detect_lang() {
+  local l="${UNINSTALL_APP_LANG:-}"
+  if [[ -z "$l" ]]; then
+    l=$(defaults read -g AppleLocale 2>/dev/null || echo "${LANG:-en}")
+  fi
+  [[ "$l" == vi* ]] && echo vi || echo en
+}
+LANG_CHOICE=$(detect_lang)
+
+# t KEY: print the message template for KEY in the active language.
+# Templates may contain printf-style %s/%d placeholders for the caller to fill.
+t() {
+  case "$LANG_CHOICE:$1" in
+    vi:usage)            echo "Cách dùng: uninstall-app [--lang en|vi] <TênApp|đường-dẫn-đến.app>" ;;
+    en:usage)             echo "Usage: uninstall-app [--lang en|vi] <AppName|path-to.app>" ;;
+    vi:not_found)        echo "Không tìm thấy app: %s" ;;
+    en:not_found)         echo "App not found: %s" ;;
+    vi:label_app)        echo "App:       %s" ;;
+    en:label_app)         echo "App:       %s" ;;
+    vi:label_path)       echo "Path:      %s" ;;
+    en:label_path)        echo "Path:      %s" ;;
+    vi:label_bundle)     echo "Bundle ID: %s" ;;
+    en:label_bundle)      echo "Bundle ID: %s" ;;
+    vi:unknown)          echo "không xác định" ;;
+    en:unknown)           echo "unknown" ;;
+    vi:leftovers_found)  echo "Leftover tìm thấy (%d):" ;;
+    en:leftovers_found)   echo "Leftovers found (%d):" ;;
+    vi:confirm)          echo "Xóa app + leftover trên vào Trash? (y/N) " ;;
+    en:confirm)           echo "Move the app + leftovers above to Trash? (y/N) " ;;
+    vi:cancelled)        echo "Hủy." ;;
+    en:cancelled)         echo "Cancelled." ;;
+    vi:done)             echo "Xong. Đã chuyển vào Trash (Finder có thể hỏi mật khẩu admin nếu app thuộc hệ thống)." ;;
+    en:done)              echo "Done. Everything moved to Trash (Finder may prompt for an admin password for system apps)." ;;
+    vi:test_pass)        echo "PASS: scan_leftovers tìm đúng 2 file, bỏ qua file không liên quan" ;;
+    en:test_pass)         echo "PASS: scan_leftovers found exactly 2 files, ignored the unrelated one" ;;
+    vi:test_fail)        echo "FAIL: expect 2 matches, got %d: %s" ;;
+    en:test_fail)         echo "FAIL: expected 2 matches, got %d: %s" ;;
+  esac
+}
 
 # scan_leftovers: fills MATCHES (global) with files/dirs whose name contains
 # the app name or bundle id, one level deep in each dir in SEARCH_DIRS.
@@ -57,17 +98,22 @@ run_selftest() {
   rm -rf "$tmp"
 
   if [[ ${#MATCHES[@]} -eq 2 ]]; then
-    echo "PASS: scan_leftovers found exactly 2 files, ignored the unrelated one"
+    t test_pass
     exit 0
   else
-    echo "FAIL: expected 2 matches, got ${#MATCHES[@]}: ${MATCHES[*]:-}"
+    printf "$(t test_fail)\n" "${#MATCHES[@]}" "${MATCHES[*]:-}"
     exit 1
   fi
 }
 
+if [[ "${1:-}" == "--lang" ]]; then
+  LANG_CHOICE="$2"
+  shift 2
+fi
+
 [[ "${1:-}" == "--test" ]] && run_selftest
 
-target="${1:?Usage: uninstall-app <AppName|path-to.app>}"
+target="${1:?$(t usage)}"
 
 if [[ -d "$target" ]]; then
   app_path="$target"
@@ -76,7 +122,7 @@ elif [[ -d "/Applications/$target.app" ]]; then
 elif [[ -d "$HOME/Applications/$target.app" ]]; then
   app_path="$HOME/Applications/$target.app"
 else
-  echo "App not found: $target" >&2
+  printf "$(t not_found)\n" "$target" >&2
   exit 1
 fi
 
@@ -84,26 +130,26 @@ app_name=$(basename "$app_path" .app)
 bundle_id=$(mdls -raw -name kMDItemCFBundleIdentifier "$app_path" 2>/dev/null)
 [[ "$bundle_id" == "(null)" ]] && bundle_id=""
 
-echo "App:       $app_name"
-echo "Path:      $app_path"
-echo "Bundle ID: ${bundle_id:-unknown}"
+printf "$(t label_app)\n" "$app_name"
+printf "$(t label_path)\n" "$app_path"
+printf "$(t label_bundle)\n" "${bundle_id:-$(t unknown)}"
 echo
 
 scan_leftovers "$app_name" "$bundle_id"
 
-echo "Leftovers found (${#MATCHES[@]}):"
+printf "$(t leftovers_found)\n" "${#MATCHES[@]}"
 for m in "${MATCHES[@]}"; do
   size=$(du -sh "$m" 2>/dev/null | cut -f1)
   echo "  [$size] $m"
 done
 echo
 
-read -rp "Move the app + leftovers above to Trash? (y/N) " confirm
-[[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Cancelled."; exit 0; }
+read -rp "$(t confirm)" confirm
+[[ "$confirm" == "y" || "$confirm" == "Y" ]] || { t cancelled; exit 0; }
 
 trash "$app_path"
 for m in "${MATCHES[@]}"; do
   trash "$m"
 done
 
-echo "Done. Everything moved to Trash (Finder may prompt for an admin password for system apps)."
+t done
