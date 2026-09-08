@@ -1,0 +1,109 @@
+#!/bin/bash
+# uninstall-app: find a macOS app + its leftover files (Application Support,
+# Caches, Preferences, Containers, Saved State, Logs...) and move them all
+# to the Trash in one go.
+# Usage: uninstall-app <AppName|path-to.app>
+#        uninstall-app --test   (self-check, no real deletion)
+set -euo pipefail
+
+SEARCH_DIRS=(
+  "$HOME/Library/Application Support"
+  "$HOME/Library/Caches"
+  "$HOME/Library/Preferences"
+  "$HOME/Library/Containers"
+  "$HOME/Library/Group Containers"
+  "$HOME/Library/Saved Application State"
+  "$HOME/Library/WebKit"
+  "$HOME/Library/HTTPStorages"
+  "$HOME/Library/Logs"
+  "$HOME/Library/LaunchAgents"
+  "/Library/Application Support"
+  "/Library/Preferences"
+  "/Library/LaunchAgents"
+  "/Library/LaunchDaemons"
+)
+
+# scan_leftovers: fills MATCHES (global) with files/dirs whose name contains
+# the app name or bundle id, one level deep in each dir in SEARCH_DIRS.
+scan_leftovers() {
+  local app_name="$1" bundle_id="$2"
+  MATCHES=()
+  for dir in "${SEARCH_DIRS[@]}"; do
+    [[ -d "$dir" ]] || continue
+    local args=(-iname "*${app_name}*")
+    [[ -n "$bundle_id" ]] && args=("${args[@]}" -o -iname "*${bundle_id}*")
+    while IFS= read -r -d '' f; do
+      MATCHES+=("$f")
+    done < <(find "$dir" -maxdepth 1 \( "${args[@]}" \) -print0 2>/dev/null)
+  done
+  if [[ ${#MATCHES[@]} -gt 0 ]]; then
+    IFS=$'\n' MATCHES=($(printf '%s\n' "${MATCHES[@]}" | sort -u)); unset IFS
+  fi
+}
+
+trash() {
+  osascript -e "tell application \"Finder\" to delete POSIX file \"$1\"" >/dev/null 2>&1 \
+    || mv "$1" "$HOME/.Trash/"
+}
+
+run_selftest() {
+  local tmp; tmp=$(mktemp -d)
+  SEARCH_DIRS=("$tmp/Application Support" "$tmp/Caches")
+  mkdir -p "${SEARCH_DIRS[@]}"
+  touch "$tmp/Application Support/TestApp" "$tmp/Caches/com.test.testapp.cache"
+  touch "$tmp/Caches/unrelated.file"
+
+  scan_leftovers "TestApp" "com.test.testapp"
+  rm -rf "$tmp"
+
+  if [[ ${#MATCHES[@]} -eq 2 ]]; then
+    echo "PASS: scan_leftovers found exactly 2 files, ignored the unrelated one"
+    exit 0
+  else
+    echo "FAIL: expected 2 matches, got ${#MATCHES[@]}: ${MATCHES[*]:-}"
+    exit 1
+  fi
+}
+
+[[ "${1:-}" == "--test" ]] && run_selftest
+
+target="${1:?Usage: uninstall-app <AppName|path-to.app>}"
+
+if [[ -d "$target" ]]; then
+  app_path="$target"
+elif [[ -d "/Applications/$target.app" ]]; then
+  app_path="/Applications/$target.app"
+elif [[ -d "$HOME/Applications/$target.app" ]]; then
+  app_path="$HOME/Applications/$target.app"
+else
+  echo "App not found: $target" >&2
+  exit 1
+fi
+
+app_name=$(basename "$app_path" .app)
+bundle_id=$(mdls -raw -name kMDItemCFBundleIdentifier "$app_path" 2>/dev/null)
+[[ "$bundle_id" == "(null)" ]] && bundle_id=""
+
+echo "App:       $app_name"
+echo "Path:      $app_path"
+echo "Bundle ID: ${bundle_id:-unknown}"
+echo
+
+scan_leftovers "$app_name" "$bundle_id"
+
+echo "Leftovers found (${#MATCHES[@]}):"
+for m in "${MATCHES[@]}"; do
+  size=$(du -sh "$m" 2>/dev/null | cut -f1)
+  echo "  [$size] $m"
+done
+echo
+
+read -rp "Move the app + leftovers above to Trash? (y/N) " confirm
+[[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Cancelled."; exit 0; }
+
+trash "$app_path"
+for m in "${MATCHES[@]}"; do
+  trash "$m"
+done
+
+echo "Done. Everything moved to Trash (Finder may prompt for an admin password for system apps)."
